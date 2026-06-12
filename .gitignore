@@ -1,0 +1,16 @@
+.DS_Store
+
+# Runtime output
+logs/
+tmp/
+
+# Generated build output
+build/
+dist/
+*.dmg
+*.zip
+*.xcarchive
+
+# Editor swap files
+*.swp
+*.swo
