@@ -232,7 +232,6 @@ All runtime configuration is via environment variables.
 | `build/` | Generated app and compiler output. Ignored by Git. |
 | `logs/` | Runtime logs. Ignored by Git. |
 | `tmp/` | Runtime locks and temp files. Ignored by Git. |
-| `old/` | Archived legacy scripts kept for reference. |
 
 ## Validation
 
@@ -245,7 +244,7 @@ bash -n mail-sync.sh
 Run ShellCheck if installed:
 
 ```bash
-shellcheck mail-sync.sh build-menu-app.sh old/mbsync-rotate.sh old/install-agent.sh
+shellcheck mail-sync.sh build-menu-app.sh
 ```
 
 Build the app:
