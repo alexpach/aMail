@@ -121,8 +121,9 @@ The menu includes:
 - `Launch at Login`
 - `Quit`
 
-The compact menu shows dependency readiness, mailbox totals, and new mail by
-account. The logs window shows a larger dashboard plus a live log viewer.
+The compact menu shows dependency readiness, mailbox totals when available, and
+new mail by account. The logs window shows a larger dashboard plus a live log
+viewer.
 
 ## Metrics
 
@@ -148,7 +149,9 @@ logs/mail-sync.verbose.log
 tmp/mail-sync.lock/
 ```
 
-These directories are ignored by Git.
+These directories are ignored by Git. The runner caps each log at startup of
+every cycle (clean log ~5000 lines, verbose log ~20000) so they do not grow
+without bound.
 
 Follow the clean log:
 
@@ -245,6 +248,12 @@ Run ShellCheck if installed:
 
 ```bash
 shellcheck mail-sync.sh build-menu-app.sh
+```
+
+Run the parser self-test:
+
+```bash
+./mail-sync.sh --self-test
 ```
 
 Build the app:

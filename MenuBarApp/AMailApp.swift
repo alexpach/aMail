@@ -17,13 +17,22 @@ struct MailboxStats {
     let unread: String
     let inbox: String
     let status: String
+    let hasMenuCounts: Bool
 
     static let unavailable = MailboxStats(
         total: "n/a",
         unread: "n/a",
         inbox: "n/a",
-        status: "notmuch count unavailable"
+        status: "notmuch count unavailable",
+        hasMenuCounts: false
     )
+
+    var menuSummary: String? {
+        guard hasMenuCounts else { return nil }
+
+        let messageWord = total == "1" ? "message" : "messages"
+        return "\(total) \(messageWord) | \(unread) unread"
+    }
 }
 
 struct RequirementsSnapshot {
@@ -87,6 +96,35 @@ struct StatsSnapshot {
     let accountActivity: [(account: String, detail: String)]
     let logPath: String
     let accountSyncInProgress: Bool
+
+    static let empty = StatsSnapshot(
+        syncState: "Unknown",
+        processState: "Unknown",
+        launchAtLoginState: "Unknown",
+        newMailWindows: AccountDownloadStats(
+            account: "All accounts",
+            lastHour: 0,
+            last24Hours: 0,
+            last7Days: 0,
+            last30Days: 0
+        ),
+        mailboxStats: .unavailable,
+        requirements: RequirementsSnapshot(
+            mbsyncPath: nil,
+            notmuchPath: nil,
+            mbsyncConfigPath: "",
+            mbsyncConfigReadable: false,
+            mbsyncChannelCount: 0
+        ),
+        lastAccountSync: "No data",
+        lastAccountSyncDisplay: "Last sync: never",
+        lastIndexing: "No data",
+        lastIssue: "No data",
+        accountDownloadStats: [],
+        accountActivity: [],
+        logPath: "",
+        accountSyncInProgress: false
+    )
 }
 
 final class AccountStatsTableView: NSView {
@@ -600,6 +638,13 @@ struct LogEntry {
 
 final class LogStore {
     let logURL: URL
+    private var cachedEntries: [LogEntry] = []
+    private var cachedSignature: FileSignature?
+
+    private struct FileSignature: Equatable {
+        let size: Int
+        let modified: Date
+    }
 
     init(logURL: URL) {
         self.logURL = logURL
@@ -630,32 +675,10 @@ final class LogStore {
         }
     }
 
-    private static let timezoneOffsets: [String: String] = [
-        "UTC": "+0000",
-        "GMT": "+0000",
-        "CET": "+0100",
-        "CEST": "+0200",
-        "EST": "-0500",
-        "EDT": "-0400",
-        "CST": "-0600",
-        "CDT": "-0500",
-        "MST": "-0700",
-        "MDT": "-0600",
-        "PST": "-0800",
-        "PDT": "-0700"
-    ]
-
-    private static let offsetLogDateFormatter: DateFormatter = {
+    private static let logDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
-        return formatter
-    }()
-
-    private static let localLogDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter
     }()
 
@@ -669,11 +692,18 @@ final class LogStore {
     }
 
     func entries() -> [LogEntry] {
+        let signature = fileSignature()
+        if let signature, signature == cachedSignature {
+            return cachedEntries
+        }
+
         guard let content = try? String(contentsOf: logURL, encoding: .utf8) else {
+            cachedEntries = []
+            cachedSignature = signature
             return []
         }
 
-        return content.split(separator: "\n").compactMap { rawLine in
+        let parsed = content.split(separator: "\n").compactMap { rawLine -> LogEntry? in
             let parts = rawLine.components(separatedBy: ": ")
             guard parts.count >= 3 else { return nil }
             return LogEntry(
@@ -682,6 +712,19 @@ final class LogStore {
                 action: parts.dropFirst(2).joined(separator: ": ")
             )
         }
+        cachedEntries = parsed
+        cachedSignature = signature
+        return parsed
+    }
+
+    private func fileSignature() -> FileSignature? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: logURL.path) else {
+            return nil
+        }
+        return FileSignature(
+            size: (attrs[.size] as? Int) ?? 0,
+            modified: (attrs[.modificationDate] as? Date) ?? .distantPast
+        )
     }
 
     func snapshot(
@@ -784,12 +827,7 @@ final class LogStore {
     }
 
     private static func logDate(from timestamp: String) -> Date? {
-        let parts = timestamp.split(separator: " ")
-        if parts.count >= 3, let offset = timezoneOffsets[String(parts[2])] {
-            return offsetLogDateFormatter.date(from: "\(parts[0]) \(parts[1]) \(offset)")
-        }
-
-        return localLogDateFormatter.date(from: String(timestamp.prefix(19)))
+        logDateFormatter.date(from: timestamp)
     }
 
     private static func lastSyncDisplay(for entry: LogEntry, now: Date) -> String {
@@ -880,7 +918,8 @@ final class MailboxStatsProvider {
                 total: formatted(total),
                 unread: formatted(unread),
                 inbox: formatted(inbox),
-                status: "updated \(statusFormatter.string(from: now))"
+                status: "updated \(statusFormatter.string(from: now))",
+                hasMenuCounts: total != nil && unread != nil
             )
         }
 
@@ -893,9 +932,7 @@ final class MailboxStatsProvider {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["notmuch", "count", query]
-        process.environment = [
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        ]
+        process.environment = countEnvironment()
 
         let output = Pipe()
         process.standardOutput = output
@@ -924,6 +961,30 @@ final class MailboxStatsProvider {
         }
 
         return countFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func countEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let fallbackPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+        if let path = environment["PATH"], !path.isEmpty {
+            environment["PATH"] = "\(fallbackPath):\(path)"
+        } else {
+            environment["PATH"] = fallbackPath
+        }
+
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+        if environment["HOME"]?.isEmpty ?? true {
+            environment["HOME"] = homeURL.path
+        }
+
+        let notmuchConfigURL = homeURL.appendingPathComponent(".notmuch-config")
+        if environment["NOTMUCH_CONFIG"]?.isEmpty ?? true,
+           FileManager.default.isReadableFile(atPath: notmuchConfigURL.path) {
+            environment["NOTMUCH_CONFIG"] = notmuchConfigURL.path
+        }
+
+        return environment
     }
 }
 
@@ -1017,24 +1078,18 @@ final class StatusHeaderView: NSView {
 }
 
 final class MenuStatsView: NSView {
-    private let requirementsSummary = NSTextField(labelWithString: "")
-    private let mailboxTitle = NSTextField(labelWithString: "Mailbox")
-    private let mailboxSummary = NSTextField(labelWithString: "")
+    private let statusSummary = NSTextField(labelWithString: "")
     private let downloadedTitle = NSTextField(labelWithString: "New mail")
     private let downloadedTable = AccountStatsTableView(accountColumnWidth: 152, numberColumnWidth: 34, fontSize: 11)
 
     override init(frame frameRect: NSRect) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 132))
+        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 104))
 
-        requirementsSummary.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        requirementsSummary.lineBreakMode = .byTruncatingMiddle
-        mailboxTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        mailboxSummary.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        mailboxSummary.textColor = .labelColor
-        mailboxSummary.lineBreakMode = .byTruncatingMiddle
+        statusSummary.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        statusSummary.lineBreakMode = .byTruncatingMiddle
         downloadedTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
-        let stackView = NSStackView(views: [requirementsSummary, mailboxTitle, mailboxSummary, downloadedTitle, downloadedTable])
+        let stackView = NSStackView(views: [statusSummary, downloadedTitle, downloadedTable])
         stackView.orientation = .vertical
         stackView.alignment = .leading
         stackView.spacing = 6
@@ -1046,8 +1101,7 @@ final class MenuStatsView: NSView {
             stackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             stackView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             stackView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-            requirementsSummary.widthAnchor.constraint(equalTo: stackView.widthAnchor),
-            mailboxSummary.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            statusSummary.widthAnchor.constraint(equalTo: stackView.widthAnchor),
             downloadedTable.widthAnchor.constraint(equalTo: stackView.widthAnchor)
         ])
     }
@@ -1057,12 +1111,12 @@ final class MenuStatsView: NSView {
     }
 
     func update(_ snapshot: StatsSnapshot) {
-        requirementsSummary.stringValue = "Dependencies: \(snapshot.requirements.summary)"
-        requirementsSummary.textColor = snapshot.requirements.canSync ? .secondaryLabelColor : .systemRed
-        mailboxSummary.stringValue = "total \(snapshot.mailboxStats.total)   unread \(snapshot.mailboxStats.unread)   inbox \(snapshot.mailboxStats.inbox)"
+        let summaryParts = [snapshot.requirements.summary] + [snapshot.mailboxStats.menuSummary].compactMap { $0 }
+        statusSummary.stringValue = summaryParts.joined(separator: " | ")
+        statusSummary.textColor = snapshot.requirements.canSync ? .secondaryLabelColor : .systemRed
         downloadedTable.update(snapshot.accountDownloadStats)
         let downloadedRows = max(2, snapshot.accountDownloadStats.count + 1)
-        frame.size = NSSize(width: 360, height: CGFloat(96 + downloadedRows * 18))
+        frame.size = NSSize(width: 360, height: CGFloat(68 + downloadedRows * 18))
     }
 }
 
@@ -1334,9 +1388,9 @@ final class SyncController {
     func appendAgentLog(_ action: String) {
         let now = Date()
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let timezone = TimeZone.current.abbreviation(for: now) ?? "UTC"
-        let line = "\(formatter.string(from: now)) \(timezone): \(agentName): \(action)\n"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+        let line = "\(formatter.string(from: now)): \(agentName): \(action)\n"
 
         if let data = line.data(using: .utf8) {
             try? FileManager.default.createDirectory(
@@ -1406,12 +1460,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            if #available(macOS 11.0, *),
-               let image = NSImage(systemSymbolName: "envelope", accessibilityDescription: "aMail") {
+            if let image = NSImage(systemSymbolName: "envelope", accessibilityDescription: "aMail") {
                 image.isTemplate = true
                 button.image = image
-            } else {
-                button.image = Self.fallbackEnvelopeImage()
             }
             button.title = ""
             button.imagePosition = .imageOnly
@@ -1543,28 +1594,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.alphaValue = 0.52 + CGFloat(wave) * 0.48
     }
 
-    private static func fallbackEnvelopeImage() -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18))
-        image.lockFocus()
-
-        let rect = NSRect(x: 2.5, y: 4.5, width: 13, height: 9)
-        let boxPath = NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5)
-        boxPath.lineWidth = 1.8
-        NSColor.black.setStroke()
-        boxPath.stroke()
-
-        let flapPath = NSBezierPath()
-        flapPath.move(to: NSPoint(x: rect.minX + 1, y: rect.maxY - 1.5))
-        flapPath.line(to: NSPoint(x: rect.midX, y: rect.midY - 1))
-        flapPath.line(to: NSPoint(x: rect.maxX - 1, y: rect.maxY - 1.5))
-        flapPath.lineWidth = 1.5
-        flapPath.stroke()
-
-        image.unlockFocus()
-        image.isTemplate = true
-        return image
-    }
-
     func menuWillOpen(_ menu: NSMenu) {
         updateMenu()
     }
@@ -1613,36 +1642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openLogs() {
         if logsWindow == nil {
             logsWindow = TextWindowController(title: "aMail Logs") { [weak self] in
-                guard let self else {
-                    return StatsSnapshot(
-                        syncState: "Unknown",
-                        processState: "Unknown",
-                        launchAtLoginState: "Unknown",
-                        newMailWindows: AccountDownloadStats(
-                            account: "All accounts",
-                            lastHour: 0,
-                            last24Hours: 0,
-                            last7Days: 0,
-                            last30Days: 0
-                        ),
-                        mailboxStats: .unavailable,
-                        requirements: RequirementsSnapshot(
-                            mbsyncPath: nil,
-                            notmuchPath: nil,
-                            mbsyncConfigPath: "",
-                            mbsyncConfigReadable: false,
-                            mbsyncChannelCount: 0
-                        ),
-                        lastAccountSync: "No data",
-                        lastAccountSyncDisplay: "Last sync: never",
-                        lastIndexing: "No data",
-                        lastIssue: "No data",
-                        accountDownloadStats: [],
-                        accountActivity: [],
-                        logPath: "",
-                        accountSyncInProgress: false
-                    )
-                }
+                guard let self else { return .empty }
                 return self.logStore.snapshot(
                     syncStatus: self.controller.statusText(),
                     syncEnabled: self.controller.syncEnabled,

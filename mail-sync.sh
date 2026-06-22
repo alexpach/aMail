@@ -35,7 +35,7 @@ TEMP_FILES=()
 declare -A NEXT_OK_AT=()
 declare -A NEXT_REASON=()
 
-timestamp() { date "+%Y-%m-%d %H:%M:%S %Z"; }
+timestamp() { date "+%Y-%m-%d %H:%M:%S %z"; }
 now_epoch() { date +%s; }
 
 log() {
@@ -52,9 +52,25 @@ vlog() {
   printf '%s: %s: %s\n' "$(timestamp)" "$actor" "$*" >> "$VERBOSE_LOG"
 }
 
+# ponytail: naive line-count cap. Switch to logrotate if you need dated archives.
+trim_log() {
+  local file="$1"
+  local max="${2:-5000}"
+  [ -f "$file" ] || return 0
+  local lines
+  lines="$(wc -l < "$file" 2>/dev/null | tr -d ' ')"
+  [ -n "$lines" ] || return 0
+  [ "$lines" -le "$max" ] && return 0
+  if tail -n "$max" "$file" > "$file.tmp" 2>/dev/null; then
+    mv "$file.tmp" "$file"
+  else
+    rm -f "$file.tmp" 2>/dev/null || true
+  fi
+}
+
 usage() {
   cat <<'EOF'
-Usage: ./mail-sync.sh [--once] [--list-accounts]
+Usage: ./mail-sync.sh [--once] [--list-accounts] [--self-test]
 
 Environment overrides:
   MAIL_SYNC_ACCOUNTS   Space-separated mbsync channel names. Defaults to all Channel entries in ~/.mbsyncrc.
@@ -495,11 +511,51 @@ list_accounts() {
   printf '%s\n' "${ACCOUNTS[@]}"
 }
 
+# Smallest check that fails if the parsers/formatters break. Run: ./mail-sync.sh --self-test
+self_test() {
+  local fail=0 tmp near_new near_flag
+  assert_eq() {
+    if [ "$1" = "$2" ]; then
+      printf 'ok   %s\n' "$3"
+    else
+      printf 'FAIL %s: got [%s] want [%s]\n' "$3" "$1" "$2"
+      fail=1
+    fi
+  }
+
+  tmp="$(mktemp)"
+  printf 'Channels: 1/1 Boxes: 5/5 Far: +0 *0 #0 -0 Near: +3 *2 #0 -0\n' > "$tmp"
+  read -r near_new near_flag _ _ _ _ _ _ <<< "$(parse_mbsync_summary "$tmp")"
+  assert_eq "$near_new" "3" "parse_mbsync_summary near_new"
+  assert_eq "$near_flag" "2" "parse_mbsync_summary near_flag"
+  rm -f "$tmp"
+
+  tmp="$(mktemp)"
+  printf 'C: 0/1 B: 0/3 N: +2/5 *0/0 #0/0\nC: 0/1 B: 0/3 N: +4/5 *0/0 #0/0\n' > "$tmp"
+  assert_eq "$(parse_progress_near_new "$tmp")" "4" "parse_progress_near_new"
+  rm -f "$tmp"
+
+  assert_eq "$(sync_summary_action 3 0 0 0 0 0)" "Downloaded 3 new messages" "sync_summary_action download"
+  assert_eq "$(sync_summary_action 0 1 0 0 0 0)" "No new messages; updated 1 flags" "sync_summary_action flags"
+
+  assert_eq "$(human_duration 3600)" "1 hour" "human_duration 1h"
+  assert_eq "$(human_duration 900)" "15 minutes" "human_duration 15m"
+  assert_eq "$(human_duration 1)" "1 second" "human_duration 1s"
+
+  if [ "$fail" -eq 0 ]; then
+    echo "all passed"
+  else
+    echo "FAILURES"
+  fi
+  return "$fail"
+}
+
 main() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --once) RUN_ONCE=1 ;;
       --list-accounts) list_accounts; exit 0 ;;
+      --self-test) self_test; exit "$?" ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; exit 64 ;;
     esac
@@ -516,6 +572,9 @@ main() {
   log "$AGENT_NAME" "Started: ${#ACCOUNTS[@]} accounts; sync sleep $(human_duration "$SUCCESS_SLEEP"); quota backoff $(human_duration "$QUOTA_BACKOFF")"
 
   while true; do
+    trim_log "$LOGFILE" 5000
+    trim_log "$VERBOSE_LOG" 20000
+
     if ! internet_available; then
       log "$AGENT_NAME" "Network unavailable: ${CONNECTIVITY_HOST}:${CONNECTIVITY_PORT}; sleeping $(human_duration "$NO_INTERNET_BACKOFF")"
       if [ "$RUN_ONCE" -eq 1 ]; then
