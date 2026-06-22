@@ -20,7 +20,14 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
 
 cp "${ROOT_DIR}/MenuBarApp/Info.plist" "${CONTENTS_DIR}/Info.plist"
-printf '%s\n' "$ROOT_DIR" > "${RESOURCES_DIR}/RepoRoot.txt"
+
+# RELEASE=1: self-contained app (bundles the sync script, no machine-specific path).
+# Otherwise a dev build that runs the script from this checkout.
+if [ "${RELEASE:-0}" = "1" ]; then
+  cp "${ROOT_DIR}/mail-sync.sh" "${RESOURCES_DIR}/mail-sync.sh"
+else
+  printf '%s\n' "$ROOT_DIR" > "${RESOURCES_DIR}/RepoRoot.txt"
+fi
 
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" "$SWIFTC" \
   -O \

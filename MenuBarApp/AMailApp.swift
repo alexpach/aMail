@@ -1204,7 +1204,7 @@ final class SyncController {
                 .path
 
         self.repoRoot = repoRoot
-        self.scriptURL = repoRoot.appendingPathComponent("mail-sync.sh")
+        self.scriptURL = Self.resolveScriptURL(repoRoot: repoRoot)
         self.logURL = logsURL.appendingPathComponent("mail-sync.log")
         self.verboseLogURL = logsURL.appendingPathComponent("mail-sync.verbose.log")
         self.lockURL = tmpURL.appendingPathComponent("mail-sync.lock/pid")
@@ -1341,9 +1341,27 @@ final class SyncController {
         return "disabled"
     }
 
+    // A release .app bundles the script in Resources; a dev build runs it from the checkout.
+    static func resolveScriptURL(repoRoot: URL) -> URL {
+        if let bundled = Bundle.main.url(forResource: "mail-sync", withExtension: "sh") {
+            return bundled
+        }
+        return repoRoot.appendingPathComponent("mail-sync.sh")
+    }
+
+    // mbsync's modern-bash features need Homebrew bash; pick whichever arch installed it.
+    static func resolveBashURL() -> URL {
+        for path in ["/opt/homebrew/bin/bash", "/usr/local/bin/bash"] {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        return URL(fileURLWithPath: "/opt/homebrew/bin/bash")
+    }
+
     private func configuredProcess(arguments: [String]) -> Process {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/bash")
+        process.executableURL = Self.resolveBashURL()
         process.arguments = [scriptURL.path] + arguments
         process.currentDirectoryURL = repoRoot
         process.environment = [
@@ -1422,7 +1440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var shimmerStep = 0
     private var logsWindow: TextWindowController?
 
-    private lazy var controller = SyncController(repoRoot: Self.resolveRepoRoot())
+    private lazy var controller = SyncController(repoRoot: Self.resolveRuntimeRoot())
     private lazy var logStore = LogStore(logURL: controller.logURL)
     private lazy var requirementsProvider = RequirementsProvider(mbsyncConfigURL: controller.mbsyncConfigURL)
     private let mailboxStatsProvider = MailboxStatsProvider()
@@ -1703,7 +1721,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    private static func resolveRepoRoot() -> URL {
+    // Runtime root holds logs/ and tmp/. An installed app (script bundled inside it)
+    // keeps them in Application Support; a dev build keeps them in the checkout.
+    private static func resolveRuntimeRoot() -> URL {
+        if Bundle.main.url(forResource: "mail-sync", withExtension: "sh") != nil {
+            let root = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/aMail", isDirectory: true)
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            return root
+        }
+
         if let resourceURL = Bundle.main.url(forResource: "RepoRoot", withExtension: "txt"),
            let path = try? String(contentsOf: resourceURL, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),

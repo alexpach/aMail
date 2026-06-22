@@ -28,7 +28,7 @@ The app is intentionally lightweight. It does not replace `mbsync` or
 
 aMail currently targets macOS and expects:
 
-- Bash
+- Homebrew Bash (the system `/bin/bash` 3.2 is too old)
 - `mbsync`
 - `notmuch`
 - `nc` or `ping` for connectivity checks
@@ -51,6 +51,26 @@ aMail checks these common executable paths:
 /usr/bin
 /bin
 ```
+
+## Install (Prebuilt)
+
+Download `aMail-<version>.zip` from the
+[Releases](https://github.com/alexpach/aMail/releases) page, unzip it, and move
+`aMail.app` to `/Applications`.
+
+The app is ad hoc signed, not notarized. On first launch Gatekeeper blocks it:
+right-click the app, choose **Open**, then confirm. One time only.
+
+A prebuilt app keeps its runtime files under Application Support, not in a
+checkout:
+
+```text
+~/Library/Application Support/aMail/logs/
+~/Library/Application Support/aMail/tmp/
+```
+
+You still need `mbsync` and `notmuch` installed and a readable `~/.mbsyncrc`
+(see Requirements and Mail Configuration).
 
 ## Mail Configuration
 
@@ -95,6 +115,13 @@ open build/aMail.app
 
 The build script signs the app ad hoc when `codesign` is available. The app is
 not notarized.
+
+For a self-contained app to distribute (bundles `mail-sync.sh`, writes runtime
+files to Application Support, no machine-specific paths), build with:
+
+```bash
+RELEASE=1 ./build-menu-app.sh
+```
 
 Build target defaults:
 
