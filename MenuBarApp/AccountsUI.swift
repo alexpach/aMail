@@ -268,6 +268,10 @@ struct AccountEditor: View {
                     Text(draft.type.passwordHelp)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let url = draft.type.passwordHelpURL {
+                        Link("How to create an app password →", destination: url)
+                            .font(.caption)
+                    }
                     if draft.type == .imap {
                         TextField("Host", text: $draft.host)
                         portField

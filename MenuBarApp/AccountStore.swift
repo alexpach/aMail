@@ -33,13 +33,20 @@ enum AccountType: String, Codable, CaseIterable, Identifiable {
     var passwordHelp: String {
         switch self {
         case .gmail:
-            return "Enable 2-Step Verification, then create an app password at "
-                + "myaccount.google.com/apppasswords."
+            return "Turn on 2-Step Verification, then create an app password."
         case .icloud:
-            return "Create an app-specific password at appleid.apple.com "
-                + "(Sign-In and Security)."
+            return "Create an app-specific password for your Apple Account."
         case .imap:
             return "Use your IMAP password, or an app password if your provider requires one."
+        }
+    }
+
+    // How-to guide for creating an app-specific password.
+    var passwordHelpURL: URL? {
+        switch self {
+        case .gmail: return URL(string: "https://support.google.com/accounts/answer/185833")
+        case .icloud: return URL(string: "https://support.apple.com/102654")
+        case .imap: return nil
         }
     }
 }
