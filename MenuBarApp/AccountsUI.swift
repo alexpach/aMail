@@ -35,11 +35,16 @@ final class AccountStore: ObservableObject {
                 : password
             if let pw { Keychain.setPassword(pw, slug: account.slug, email: account.email) }
             Keychain.deletePassword(slug: original.slug, email: original.email)
-            if renameStoreFolder {
-                try? repository.renameStore(base: config.archiveBase, oldSlug: original.slug, newSlug: account.slug)
-            }
         } else if !password.isEmpty {
             Keychain.setPassword(password, slug: account.slug, email: account.email)
+        }
+
+        if let original, renameStoreFolder {
+            let oldPath = MbsyncConfig.maildirPath(for: original, archiveBase: config.archiveBase)
+            let newPath = MbsyncConfig.maildirPath(for: account, archiveBase: config.archiveBase)
+            if oldPath != newPath {
+                try? repository.renameStore(fromPath: oldPath, toPath: newPath)
+            }
         }
 
         var updated = others
@@ -52,7 +57,7 @@ final class AccountStore: ObservableObject {
     func delete(_ account: MailAccount, deleteStoreFolder: Bool) {
         Keychain.deletePassword(slug: account.slug, email: account.email)
         if deleteStoreFolder {
-            try? repository.deleteStore(base: config.archiveBase, slug: account.slug)
+            try? repository.deleteStore(path: MbsyncConfig.maildirPath(for: account, archiveBase: config.archiveBase))
         }
         persist(config.accounts.filter { $0.id != account.id })
     }
@@ -282,8 +287,19 @@ struct AccountEditor: View {
                     HStack {
                         TextField("Slug", text: $draft.slug)
                             .onChange(of: draft.slug) { _, _ in slugEditedManually = true }
-                        Text("folder & channel name").font(.caption).foregroundStyle(.secondary)
+                        Text("channel name").font(.caption).foregroundStyle(.secondary)
                     }
+                    HStack {
+                        TextField("Folder (blank = default)", text: $draft.folder)
+                        Button("Choose…") { chooseFolder() }
+                        if !draft.folder.isEmpty {
+                            Button("Default") { draft.folder = "" }
+                        }
+                    }
+                    Text("Mail stored at \(effectivePath)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                     if draft.type != .imap {
                         TextField("Host", text: $draft.host)
                         portField
@@ -328,6 +344,21 @@ struct AccountEditor: View {
         TextField("Port", value: $draft.port, format: .number.grouping(.never))
     }
 
+    private var effectivePath: String {
+        MbsyncConfig.maildirPath(for: draft, archiveBase: store.config.archiveBase)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            draft.folder = url.path
+        }
+    }
+
     private func runTest() {
         guard let mbsyncPath = store.mbsyncPath else {
             testResult = CredentialTestResult(ok: false, message: "mbsync not found. Install it with: brew install isync")
@@ -352,18 +383,23 @@ struct AccountEditor: View {
         }
 
         var renameFolder = false
-        if let original, original.slug != draft.slug {
-            let alert = NSAlert()
-            alert.messageText = "Rename archive folder to “\(draft.slug)”?"
-            alert.informativeText = "The slug changed. aMail can move the existing local mail "
-                + "folder and update all paths, or leave the old folder in place."
-            alert.addButton(withTitle: "Rename Folder")
-            alert.addButton(withTitle: "Keep Old Folder")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn: renameFolder = true
-            case .alertSecondButtonReturn: renameFolder = false
-            default: return
+        if let original {
+            let oldPath = MbsyncConfig.maildirPath(for: original, archiveBase: store.config.archiveBase)
+            let newPath = MbsyncConfig.maildirPath(for: draft, archiveBase: store.config.archiveBase)
+            if oldPath != newPath {
+                let alert = NSAlert()
+                alert.messageText = "Move the local mail folder?"
+                alert.informativeText = "The folder changed:\n\(oldPath)\n→\n\(newPath)\n\n"
+                    + "aMail can move the existing mail and update all paths, or leave the old "
+                    + "folder in place and start fresh at the new location."
+                alert.addButton(withTitle: "Move Folder")
+                alert.addButton(withTitle: "Keep Old Folder")
+                alert.addButton(withTitle: "Cancel")
+                switch alert.runModal() {
+                case .alertFirstButtonReturn: renameFolder = true
+                case .alertSecondButtonReturn: renameFolder = false
+                default: return
+                }
             }
         }
 

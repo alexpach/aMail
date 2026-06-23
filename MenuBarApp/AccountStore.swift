@@ -63,6 +63,7 @@ struct MailAccount: Codable, Identifiable, Equatable {
     var authMechs: String = "LOGIN"
     var patterns: String = "*"
     var maxSize: String = ""   // empty = unlimited; e.g. "50m"
+    var folder: String = ""    // empty = <archiveBase>/<slug>; else an explicit path
 }
 
 struct AccountsConfig: Codable {
@@ -101,11 +102,20 @@ enum MbsyncConfig {
         "aMail: \(slug)"
     }
 
+    // Resolved Maildir path for an account: its explicit folder, or <base>/<slug>.
+    static func maildirPath(for account: MailAccount, archiveBase: String) -> String {
+        let folder = account.folder.trimmingCharacters(in: .whitespaces)
+        if !folder.isEmpty {
+            let expanded = expand(folder)
+            return expanded.hasSuffix("/") ? String(expanded.dropLast()) : expanded
+        }
+        return "\(expand(archiveBase))/\(account.slug)"
+    }
+
     // mbsync stanzas for one account. archiveBase is the (possibly ~-prefixed) root.
     static func stanza(for account: MailAccount, archiveBase: String) -> String {
         let slug = account.slug
-        let base = expand(archiveBase)
-        let path = "\(base)/\(slug)"
+        let path = maildirPath(for: account, archiveBase: archiveBase)
         let service = keychainService(slug: slug)
         let passCmd = "security find-generic-password -s '\(service)' -a '\(account.email)' -w"
 
@@ -414,26 +424,29 @@ final class AccountRepository {
     }
 
     func createMaildirs(_ config: AccountsConfig) {
-        let base = MbsyncConfig.expand(config.archiveBase)
         for account in config.accounts {
-            let dir = URL(fileURLWithPath: base).appendingPathComponent(account.slug, isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let path = MbsyncConfig.maildirPath(for: account, archiveBase: config.archiveBase)
+            try? FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: path),
+                withIntermediateDirectories: true
+            )
         }
     }
 
-    func renameStore(base: String, oldSlug: String, newSlug: String) throws {
-        let root = URL(fileURLWithPath: MbsyncConfig.expand(base))
-        let from = root.appendingPathComponent(oldSlug, isDirectory: true)
-        let to = root.appendingPathComponent(newSlug, isDirectory: true)
-        if FileManager.default.fileExists(atPath: from.path) {
-            try FileManager.default.moveItem(at: from, to: to)
+    func renameStore(fromPath: String, toPath: String) throws {
+        if FileManager.default.fileExists(atPath: fromPath) {
+            let to = URL(fileURLWithPath: toPath)
+            try FileManager.default.createDirectory(
+                at: to.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.moveItem(at: URL(fileURLWithPath: fromPath), to: to)
         }
     }
 
-    func deleteStore(base: String, slug: String) throws {
-        let dir = URL(fileURLWithPath: MbsyncConfig.expand(base)).appendingPathComponent(slug, isDirectory: true)
-        if FileManager.default.fileExists(atPath: dir.path) {
-            try FileManager.default.removeItem(at: dir)
+    func deleteStore(path: String) throws {
+        if FileManager.default.fileExists(atPath: path) {
+            try FileManager.default.removeItem(at: URL(fileURLWithPath: path))
         }
     }
 
@@ -513,6 +526,16 @@ enum AMailSelfTest {
         // Channel discovery round-trips
         let names = MbsyncConfig.channelNames(in: stanza)
         check(names == ["work"], "channel discovered")
+
+        // Per-account folder: default vs explicit override
+        check(MbsyncConfig.maildirPath(for: account, archiveBase: "/tmp/Mail") == "/tmp/Mail/work",
+              "maildir default path")
+        var custom = account
+        custom.folder = "/srv/mail/work-archive/"
+        check(MbsyncConfig.maildirPath(for: custom, archiveBase: "/tmp/Mail") == "/srv/mail/work-archive",
+              "maildir explicit path")
+        check(MbsyncConfig.stanza(for: custom, archiveBase: "/tmp/Mail").contains("Path /srv/mail/work-archive/"),
+              "stanza honors explicit folder")
 
         // Managed-block merge preserves foreign content
         let foreign = "# my hand-written config\nIMAPAccount legacy\n  Host x\n"

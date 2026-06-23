@@ -91,9 +91,11 @@ time.
 
 Each account is named; aMail derives a **slug** from the name and uses it for the
 local folder, the mbsync channel, and the Keychain item. Mail is archived under a
-configurable base folder (default `~/MailArchive/`) at `<base>/<slug>/`. Renaming
-a slug offers to move the folder and rewrite paths; deleting an account asks
-whether to also delete its local archive.
+configurable base folder (default `~/MailArchive/`) at `<base>/<slug>/`, or at a
+per-account folder you set in the editor's Advanced section. Changing an
+account's folder (via the slug or the folder field) offers to move the existing
+mail and rewrite paths; deleting an account asks whether to also delete its local
+archive.
 
 aMail edits only a managed region of `~/.mbsyncrc`:
 
