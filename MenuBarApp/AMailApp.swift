@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import SwiftUI
 
 private let agentName = "amail-agent"
 
@@ -1441,6 +1442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var logsWindow: TextWindowController?
 
     private lazy var controller = SyncController(repoRoot: Self.resolveRuntimeRoot())
+    private lazy var accountStore = AccountStore()
+    private var accountsWindow: NSWindow?
     private lazy var logStore = LogStore(logURL: controller.logURL)
     private lazy var requirementsProvider = RequirementsProvider(mbsyncConfigURL: controller.mbsyncConfigURL)
     private let mailboxStatsProvider = MailboxStatsProvider()
@@ -1513,6 +1516,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let logsItem = NSMenuItem(title: "Open Logs", action: #selector(openLogs), keyEquivalent: "")
         logsItem.target = self
         menu.addItem(logsItem)
+
+        let accountsItem = NSMenuItem(title: "Accounts…", action: #selector(openAccounts), keyEquivalent: "a")
+        accountsItem.target = self
+        accountsItem.toolTip = "Add, edit, or remove mail accounts"
+        menu.addItem(accountsItem)
 
         let configItem = NSMenuItem(title: "Open mbsync Config", action: #selector(openMbsyncConfig), keyEquivalent: ",")
         configItem.target = self
@@ -1645,6 +1653,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateMenu()
     }
 
+    @objc private func openAccounts() {
+        if accountsWindow == nil {
+            let hosting = NSHostingController(rootView: AccountsView().environmentObject(accountStore))
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "aMail Accounts"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 560, height: 480))
+            window.center()
+            window.isReleasedWhenClosed = false
+            accountsWindow = window
+        }
+        accountsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func openMbsyncConfig() {
         let url = controller.mbsyncConfigURL
         guard FileManager.default.isReadableFile(atPath: url.path) else {
@@ -1747,6 +1770,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 @main
 struct AMailApp {
     static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            exit(AMailSelfTest.run())
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

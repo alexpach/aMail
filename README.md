@@ -19,6 +19,7 @@ The app is intentionally lightweight. It does not replace `mbsync` or
 - Provides a `Run Now` command to trigger an immediate pass.
 - Opens live logs without leaving the app.
 - Opens your `mbsync` config in an editor.
+- Manages mail accounts from a UI: add/remove/edit Gmail, iCloud, or IMAP.
 - Checks for required dependencies and config before starting sync.
 - Shows recent new-mail totals for 1 hour, 24 hours, 7 days, and 30 days.
 - Shows current mailbox totals from `notmuch count`.
@@ -26,7 +27,7 @@ The app is intentionally lightweight. It does not replace `mbsync` or
 
 ## Requirements
 
-aMail currently targets macOS and expects:
+aMail targets macOS 14 or newer (the account UI uses modern SwiftUI) and expects:
 
 - Homebrew Bash (the system `/bin/bash` 3.2 is too old)
 - `mbsync`
@@ -71,6 +72,40 @@ checkout:
 
 You still need `mbsync` and `notmuch` installed and a readable `~/.mbsyncrc`
 (see Requirements and Mail Configuration).
+
+## Managing Accounts
+
+The menu item **Accounts…** (⌘A) opens an account manager. Click **+**, pick a
+type, and fill in the login:
+
+- **Gmail** — turn on 2-Step Verification, then create an app password at
+  [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+- **iCloud** — create an app-specific password at
+  [appleid.apple.com](https://appleid.apple.com) (Sign-In and Security).
+- **IMAP** — enter host, port, email, and password directly.
+
+The **Test** button verifies the credentials by listing mailboxes with `mbsync`
+before you save. Passwords are stored in the macOS Keychain — never in
+`~/.mbsyncrc`, which receives only a `PassCmd` that reads the Keychain at sync
+time.
+
+Each account is named; aMail derives a **slug** from the name and uses it for the
+local folder, the mbsync channel, and the Keychain item. Mail is archived under a
+configurable base folder (default `~/MailArchive/`) at `<base>/<slug>/`. Renaming
+a slug offers to move the folder and rewrite paths; deleting an account asks
+whether to also delete its local archive.
+
+aMail edits only a managed region of `~/.mbsyncrc`:
+
+```text
+# >>> aMail managed — do not edit by hand >>>
+...generated account stanzas...
+# <<< aMail managed <<<
+```
+
+Anything outside that region is left untouched, so hand-written stanzas are safe.
+For search and mailbox counts, `notmuch`'s `database.path` must cover the archive
+base; aMail warns in the UI if it does not.
 
 ## Mail Configuration
 
@@ -127,8 +162,8 @@ Build target defaults:
 
 ```text
 ARCH=$(uname -m)
-MACOSX_DEPLOYMENT_TARGET=13.0
-TARGET=$ARCH-apple-macosx13.0
+MACOSX_DEPLOYMENT_TARGET=14.0
+TARGET=$ARCH-apple-macosx14.0
 ```
 
 Override them when needed:
@@ -281,6 +316,12 @@ Run the parser self-test:
 
 ```bash
 ./mail-sync.sh --self-test
+```
+
+Run the account-logic self-test (after building):
+
+```bash
+build/aMail.app/Contents/MacOS/aMail --self-test
 ```
 
 Build the app:

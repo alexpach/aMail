@@ -13,7 +13,7 @@ MODULE_CACHE_DIR="${BUILD_DIR}/ModuleCache"
 SWIFTC="$(xcrun --find swiftc)"
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 ARCH="${ARCH:-$(uname -m)}"
-MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 TARGET="${TARGET:-${ARCH}-apple-macosx${MACOSX_DEPLOYMENT_TARGET}}"
 
 rm -rf "$APP_DIR"
@@ -36,7 +36,8 @@ CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" "$SWIFTC" \
   -target "$TARGET" \
   -module-cache-path "$MODULE_CACHE_DIR" \
   -framework AppKit \
-  "${ROOT_DIR}/MenuBarApp/AMailApp.swift" \
+  -framework SwiftUI \
+  "${ROOT_DIR}"/MenuBarApp/*.swift \
   -o "${MACOS_DIR}/aMail"
 
 chmod +x "${MACOS_DIR}/aMail"
