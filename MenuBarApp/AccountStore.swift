@@ -41,8 +41,17 @@ enum AccountType: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    // How-to guide for creating an app-specific password.
-    var passwordHelpURL: URL? {
+    // Page where the user creates an app-specific password.
+    var passwordCreateURL: URL? {
+        switch self {
+        case .gmail: return URL(string: "https://myaccount.google.com/apppasswords")
+        case .icloud: return URL(string: "https://account.apple.com")
+        case .imap: return nil
+        }
+    }
+
+    // Support article explaining the process.
+    var passwordSupportURL: URL? {
         switch self {
         case .gmail: return URL(string: "https://support.google.com/accounts/answer/185833")
         case .icloud: return URL(string: "https://support.apple.com/102654")
