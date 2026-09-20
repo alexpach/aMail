@@ -1,5 +1,95 @@
 # RESEARCH
 
+## 2026-07-04 — macOS 26 (Tahoe) / Liquid Glass design adoption
+
+Goal: make aMail match Apple's macOS 26 HIG. New design language is **Liquid
+Glass** (WWDC 2025): translucent functional layer (bars, controls, menus)
+floating over content; transparent menu bar; layered app icons; rounder
+window corners and controls.
+
+### Where we stand (good news)
+
+- This machine runs **macOS 26.5.2** and builds against **SDK 26.5**
+  (`build-menu-app.sh` uses `xcrun --sdk macosx`). Linking the macOS 26 SDK is
+  the opt-in: **standard chrome auto-adopts Liquid Glass on recompile** — menus,
+  sheets, alerts, window corners, control shapes. Our current builds already
+  get this. Opt-out (not wanted) would be `UIDesignRequiresCompatibility` in
+  Info.plist.
+- Status item follows HIG already: template SF Symbol (`envelope`), works on
+  the now-transparent menu bar. `NSMenu` + `NSAlert` are system-rendered → free.
+- All colors are semantic (`.labelColor`, `.secondary`, …), fonts are system →
+  adapt automatically, including Reduce Transparency / Increase Contrast.
+- HIG rule that helps us: **don't apply glass to the content layer, use it
+  sparingly** — standard components pick it up automatically. Most of aMail
+  needs *removal of nothing and addition of little*.
+
+### Gaps, ranked
+
+1. **App icon — the big one.** aMail ships **no icon at all** (no .icns, no
+   assets). macOS 26 icons are layered Liquid Glass, built with **Icon
+   Composer** (free Apple app, needs macOS 26.4+; we're on 26.5): 1024×1024
+   square canvas, background layer + up to 4 foreground layers, system applies
+   rounded-rect mask + specular/refraction, six appearance variants (default /
+   dark / clear light+dark / tinted light+dark — system can derive the rest).
+   Output is a `.icon` bundle; compiling it into the app needs `actool` from
+   full Xcode 26 (**not installed** — only CLT; `xcodebuild` missing). Fallback:
+   also export a classic `.icns` (macOS auto-wraps legacy icons in a glass
+   slab); CLT-only pipeline = `iconutil` for .icns, works today.
+2. **Accounts window footer → toolbar.** Buttons (+ / − / Import… / archive
+   chooser) sit in a hand-rolled footer `HStack`. The macOS 26 way: window
+   `.toolbar` items (glass, grouped with `ToolbarSpacer`), or at minimum
+   `.buttonStyle(.glass)` on the primary action. `Form`/`.formStyle(.grouped)`
+   and `.sheet` auto-update — leave alone.
+3. **Hardcoded layout metrics.** Editor `.frame(width:480,height:560)`, footer
+   `.padding(12)`, dashboard's hand-tuned spacing — HIG says don't hard-code;
+   controls got rounder/bigger and may clip. Needs a visual pass, not a rewrite.
+4. **Logs window.** Custom `NSBox` dashboard = content layer → correctly stays
+   plain (no glass). Optional polish: real `NSToolbar` for actions, and
+   `NSGlassEffectView` only if we ever float controls over the log text.
+5. **Availability guards.** Deployment target is 14.0; new APIs
+   (`glassEffect`, `.buttonStyle(.glass)`, `ToolbarSpacer`,
+   `NSGlassEffectView`, `scrollEdgeEffectStyle`) need
+   `if #available(macOS 26.0, *)` — or bump `MACOSX_DEPLOYMENT_TARGET`/
+   `LSMinimumSystemVersion` to 26.0 and drop the guards (simplest; this is a
+   personal tool on a 26.5 machine).
+
+### API cheat sheet (macOS 26)
+
+- SwiftUI: `glassEffect(_:in:)`, `GlassEffectContainer` (batch/morph custom
+  glass), `.buttonStyle(.glass)` / `.glassProminent`, `ToolbarSpacer`,
+  `scrollEdgeEffectStyle(_:for:)`, `safeAreaBar`, `backgroundExtensionEffect()`.
+- AppKit: `NSGlassEffectView`, `NSButton.BezelStyle.glass`,
+  `NSToolbarItem.Identifier.space`, `NSToolbarItem.isHidden`,
+  `NSBackgroundExtensionView`.
+- Materials: `.regular` glass for text-heavy surfaces; `.clear` only over rich
+  media (needs 35% dim layer on bright content). Vibrant colors on glass.
+
+### Proposed plan
+
+1. App icon: design layered envelope icon in Icon Composer → `.icon` +
+   `.icns` fallback; wire into build script + Info.plist. (Needs decision:
+   install full Xcode 26 for actool, or .icns-only for now.)
+2. Bump deployment target to 26.0, re-test.
+3. Accounts window: move footer actions into `.toolbar`, glass prominent Save,
+   visual pass on paddings/frames.
+4. Verify menu custom views + logs dashboard under transparent menu bar,
+   Reduce Transparency, dark mode.
+
+### Sources
+
+- [Adopting Liquid Glass (Apple)](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass)
+- [Liquid Glass overview (Apple)](https://developer.apple.com/documentation/TechnologyOverviews/liquid-glass)
+- [HIG — Materials / Liquid Glass](https://developer.apple.com/design/human-interface-guidelines/materials)
+- [HIG — The menu bar](https://developer.apple.com/design/human-interface-guidelines/the-menu-bar)
+- [HIG — App icons](https://developer.apple.com/design/human-interface-guidelines/app-icons)
+- [Icon Composer](https://developer.apple.com/icon-composer/) ·
+  [Creating your app icon using Icon Composer](https://developer.apple.com/documentation/Xcode/creating-your-app-icon-using-icon-composer)
+- [`glassEffect(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffect(_:in:)) ·
+  [Meet Liquid Glass — WWDC25](https://developer.apple.com/videos/play/wwdc2025/219)
+- [Apple newsroom — new software design](https://www.apple.com/newsroom/2025/06/apple-introduces-a-delightful-and-elegant-new-software-design/)
+- Community field notes: [Updating app icons for macOS 26](https://successfulsoftware.net/2025/09/26/updating-application-icons-for-macos-26-tahoe-and-liquid-glass/),
+  [praeclarum on app icons](https://praeclarum.org/2025/09/12/app-icons.html)
+
 ## 2026-06-23 — Account management UI (v0.10)
 
 Goal: add a macOS UI to add/remove/edit mbsync accounts for Gmail, iCloud, and
