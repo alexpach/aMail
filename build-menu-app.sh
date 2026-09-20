@@ -20,6 +20,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
 
 cp "${ROOT_DIR}/MenuBarApp/Info.plist" "${CONTENTS_DIR}/Info.plist"
+cp "${ROOT_DIR}"/MenuBarApp/Assets/* "${RESOURCES_DIR}/"
 
 # RELEASE=1: self-contained app (bundles the sync script, no machine-specific path).
 # Otherwise a dev build that runs the script from this checkout.
