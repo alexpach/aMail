@@ -25,10 +25,10 @@ NO_INTERNET_BACKOFF="${NO_INTERNET_BACKOFF:-300}"      # 5m without connectivity
 CONNECTIVITY_HOST="${CONNECTIVITY_HOST:-imap.gmail.com}"
 CONNECTIVITY_PORT="${CONNECTIVITY_PORT:-993}"
 CONNECTIVITY_TIMEOUT="${CONNECTIVITY_TIMEOUT:-5}"
-RUN_NOW_CHECK_INTERVAL="${RUN_NOW_CHECK_INTERVAL:-5}"
 
 RUN_ONCE=0
 RUN_NOW_REQUESTED=0
+SLEEP_PID=""
 
 ACCOUNTS=()
 TEMP_FILES=()
@@ -79,11 +79,11 @@ Environment overrides:
   NO_INTERNET_BACKOFF  Seconds to wait when internet is unreachable. Default: 300.
   CONNECTIVITY_HOST    Host checked before syncing. Default: imap.gmail.com.
   CONNECTIVITY_PORT    Port checked before syncing. Default: 993.
-  RUN_NOW_CHECK_INTERVAL Seconds between run-now checks while sleeping. Default: 5.
   LOG_DIR              Runtime log directory. Default: ./logs.
   TMP_DIR              Runtime lock/temp directory. Default: ./tmp.
   LOGFILE              Clean summary log. Default: ./logs/mail-sync.log.
   VERBOSE_LOG          Raw mbsync/notmuch log. Default: ./logs/mail-sync.verbose.log.
+                       Set to /dev/null to turn verbose logging off.
 EOF
 }
 
@@ -183,6 +183,7 @@ remove_temp() {
 
 cleanup() {
   local tmp
+  [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
   for tmp in "${TEMP_FILES[@]:-}"; do
     [ -n "$tmp" ] && [ -e "$tmp" ] && rm -f "$tmp"
   done
@@ -203,7 +204,6 @@ request_run_now() {
 
 sleep_until_next_run() {
   local seconds="$1"
-  local remaining chunk
 
   if [ "$RUN_NOW_REQUESTED" -eq 1 ]; then
     RUN_NOW_REQUESTED=0
@@ -211,20 +211,13 @@ sleep_until_next_run() {
     return 0
   fi
 
-  remaining="$seconds"
-  while [ "$remaining" -gt 0 ]; do
-    chunk="$RUN_NOW_CHECK_INTERVAL"
-    [ "$chunk" -le 0 ] && chunk=5
-    [ "$chunk" -gt "$remaining" ] && chunk="$remaining"
-
-    sleep "$chunk" || true
-
-    if [ "$RUN_NOW_REQUESTED" -eq 1 ]; then
-      break
-    fi
-
-    remaining=$((remaining - chunk))
-  done
+  # One sleep, no polling: bash defers a trap until the foreground command ends, but `wait` returns
+  # as soon as the signal lands. So USR1 starts the next pass immediately instead of up to a chunk late.
+  sleep "$seconds" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID" 2>/dev/null || true
+  kill "$SLEEP_PID" 2>/dev/null || true
+  SLEEP_PID=""
 
   if [ "$RUN_NOW_REQUESTED" -eq 1 ]; then
     RUN_NOW_REQUESTED=0
@@ -541,6 +534,20 @@ self_test() {
   assert_eq "$(human_duration 3600)" "1 hour" "human_duration 1h"
   assert_eq "$(human_duration 900)" "15 minutes" "human_duration 15m"
   assert_eq "$(human_duration 1)" "1 second" "human_duration 1s"
+
+  # A long sleep must end the moment USR1 lands, not when the timer runs out.
+  local saved_logfile="$LOGFILE" started elapsed
+  LOGFILE="$(mktemp)"
+  trap request_run_now USR1
+  started="$(now_epoch)"
+  ( sleep 1; kill -USR1 $$ ) &
+  sleep_until_next_run 30 > /dev/null
+  elapsed=$(( $(now_epoch) - started ))
+  trap - USR1
+  rm -f "$LOGFILE"
+  LOGFILE="$saved_logfile"
+  assert_eq "$([ "$elapsed" -lt 5 ] && echo yes || echo no)" "yes" "run-now interrupts sleep"
+  assert_eq "$RUN_NOW_REQUESTED" "0" "run-now flag cleared"
 
   if [ "$fail" -eq 0 ]; then
     echo "all passed"

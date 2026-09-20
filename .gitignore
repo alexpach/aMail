@@ -25,3 +25,5 @@ webapp/.env*
 **/*token*.json
 webapp/test-results/
 webapp/playwright-report/
+# Local credentials (never commit)
+webapp/client_secret*.json

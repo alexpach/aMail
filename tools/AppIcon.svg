@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#79B4E8"/>
+      <stop offset="1" stop-color="#3565A4"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#DFD2B2"/>
+      <stop offset="1" stop-color="#C7B790"/>
+    </linearGradient>
+    <linearGradient id="flap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FDFAF2"/>
+      <stop offset="1" stop-color="#EDE4CE"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C4B389"/>
+      <stop offset="1" stop-color="#B09C6C"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- envelope drop shadow (stacked, no filters) -->
+  <rect x="150" y="292" width="724" height="472" rx="22" fill="#0A2038" opacity="0.10"/>
+  <rect x="156" y="286" width="712" height="466" rx="20" fill="#0A2038" opacity="0.14"/>
+  <rect x="160" y="280" width="704" height="462" rx="18" fill="#0A2038" opacity="0.18"/>
+
+  <!-- envelope body -->
+  <rect x="162" y="272" width="700" height="480" rx="16" fill="url(#paper)"/>
+  <!-- top edge highlight -->
+  <rect x="162" y="272" width="700" height="6" rx="3" fill="#FFFFFF" opacity="0.55"/>
+
+  <!-- flap: folded down from the top edge, an upside-down A -->
+  <path d="M 172 282 L 852 282 L 512 724 Z" fill="url(#flap)"/>
+
+  <!-- shadow cast by flap edges onto body -->
+  <path d="M 172 282 L 512 724 L 526 706 L 196 282 Z" fill="#8F8264" opacity="0.28"/>
+  <path d="M 852 282 L 512 724 L 498 706 L 828 282 Z" fill="#8F8264" opacity="0.28"/>
+
+  <!-- crossbar: folded band across the flap -->
+  <path d="M 251 384 L 774 384 L 731 439 L 293 439 Z" fill="url(#bar)"/>
+  <path d="M 247 384 L 778 384 L 774 390 L 251 390 Z" fill="#FFFFFF" opacity="0.5"/>
+  <path d="M 293 439 L 731 439 L 736 446 L 288 446 Z" fill="#8F8264" opacity="0.45"/>
+
+  <!-- crease strokes along the legs -->
+  <path d="M 172 282 L 512 724" stroke="#A6987A" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M 852 282 L 512 724" stroke="#A6987A" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M 178 288 L 518 718" stroke="#FFFFFF" stroke-width="3" opacity="0.4" fill="none" stroke-linecap="round"/>
+  <path d="M 846 288 L 506 718" stroke="#FFFFFF" stroke-width="3" opacity="0.4" fill="none" stroke-linecap="round"/>
+
+  <!-- envelope bottom edge shading -->
+  <rect x="162" y="736" width="700" height="16" rx="8" fill="#8F8264" opacity="0.25"/>
+</svg>
