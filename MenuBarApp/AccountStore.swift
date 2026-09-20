@@ -818,6 +818,54 @@ enum AMailSelfTest {
         check(reparsed.candidates.isEmpty, "import skips managed block")
         check(reparsed.residual.contains(MbsyncConfig.beginMarker), "import residual keeps managed block")
 
+        // LogStore digest cache: same log must give the same numbers, a grown log must give new ones.
+        let logRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("amail-logstore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: logRoot) }
+        try? FileManager.default.createDirectory(at: logRoot, withIntermediateDirectories: true)
+        let logURL = logRoot.appendingPathComponent("mail-sync.log")
+
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+        let nowStamp = stamp.string(from: Date())
+        let line = "\(nowStamp): test-account: Downloaded 3 messages\n"
+
+        try? (line + line).write(to: logURL, atomically: true, encoding: .utf8)
+        let store = LogStore(logURL: logURL)
+        func lastHour() -> Int {
+            store.snapshot(
+                syncStatus: "test",
+                syncEnabled: true,
+                launchAtLogin: false,
+                mailboxStats: .unavailable,
+                requirements: RequirementsSnapshot(
+                    mbsyncPath: nil,
+                    notmuchPath: nil,
+                    mbsyncConfigPath: "",
+                    mbsyncConfigReadable: false,
+                    mbsyncChannelCount: 0
+                )
+            ).newMailWindows.lastHour
+        }
+
+        check(lastHour() == 6, "log digest counts downloads")
+        check(lastHour() == 6, "log digest stable when log unchanged")
+        try? (line + line + line).write(to: logURL, atomically: true, encoding: .utf8)
+        check(lastHour() == 9, "log digest refreshes when log grows")
+
+        // tail() reads a byte window off the end, so a log far bigger than that window is the case that matters.
+        let bigLog = (1...5000)
+            .map { "\(nowStamp): test-account: padded line number \($0) \(String(repeating: "x", count: 60))" }
+            .joined(separator: "\n") + "\n"
+        try? bigLog.write(to: logURL, atomically: true, encoding: .utf8)
+        let tailLines = store.tail(lineCount: 10)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.isEmpty }
+        check(tailLines.count == 10, "tail returns the requested line count")
+        check(tailLines.last?.contains("number 5000") == true, "tail ends at the last line")
+        check(tailLines.allSatisfy { $0.hasPrefix(nowStamp) }, "tail drops the partial first line")
+
         print(failed == 0 ? "all passed" : "FAILURES: \(failed)")
         return failed == 0 ? 0 : 1
     }

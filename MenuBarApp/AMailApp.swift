@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 import SwiftUI
+import Symbols
 
 private let agentName = "amail-agent"
 
@@ -471,9 +472,12 @@ final class TextWindowController: NSWindowController {
         ])
 
         super.init(window: window)
+        // The controller outlives the window, so a closed window would otherwise keep refreshing forever.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard self?.window?.isVisible == true else { return }
             self?.refresh()
         }
+        refreshTimer?.tolerance = 1
         refresh()
     }
 
@@ -635,16 +639,39 @@ struct LogEntry {
     let timestamp: String
     let actor: String
     let action: String
+    // Parsed once when the line is read; ICU date parsing is far too slow to redo every refresh.
+    let date: Date?
 }
 
 final class LogStore {
     let logURL: URL
     private var cachedEntries: [LogEntry] = []
     private var cachedSignature: FileSignature?
+    private var cachedDigest: LogDigest?
+    private var cachedDigestKey: DigestKey?
+    private var cachedTail: String?
+    private var cachedTailSignature: FileSignature?
 
     private struct FileSignature: Equatable {
         let size: Int
         let modified: Date
+    }
+
+    // The digest only changes when the log changes or the rolling windows tick over.
+    private struct DigestKey: Equatable {
+        let signature: FileSignature?
+        let minute: Int
+    }
+
+    private struct LogDigest {
+        let newMailWindows: AccountDownloadStats
+        let accountDownloadStats: [AccountDownloadStats]
+        let accountActivity: [(account: String, detail: String)]
+        let lastAccountSync: String
+        let lastAccountSyncDisplay: String
+        let lastIndexing: String
+        let lastIssue: String
+        let accountSyncInProgress: Bool
     }
 
     init(logURL: URL) {
@@ -684,12 +711,38 @@ final class LogStore {
     }()
 
     func tail(lineCount: Int = 300) -> String {
-        guard let content = try? String(contentsOf: logURL, encoding: .utf8) else {
-            return "No log file found at:\n\(logURL.path)"
+        let signature = fileSignature()
+        if let cachedTail, let signature, signature == cachedTailSignature {
+            return cachedTail
         }
 
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
-        return lines.suffix(lineCount).joined(separator: "\n")
+        guard let handle = try? FileHandle(forReadingFrom: logURL) else {
+            return "No log file found at:\n\(logURL.path)"
+        }
+        defer { try? handle.close() }
+
+        // 300 lines fit in far less than this; reading the whole log to throw away the front is the slow way.
+        let windowBytes: UInt64 = 64 * 1024
+        let end = (try? handle.seekToEnd()) ?? 0
+        let start = end > windowBytes ? end - windowBytes : 0
+        try? handle.seek(toOffset: start)
+        var text = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
+
+        // Seeking by byte lands mid-line (and possibly mid-character); that first fragment is not a log line.
+        if start > 0, let firstNewline = text.firstIndex(of: "\n") {
+            text = String(text[text.index(after: firstNewline)...])
+        }
+
+        // Without this the trailing newline costs one of the requested lines.
+        if text.hasSuffix("\n") {
+            text.removeLast()
+        }
+
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let result = lines.suffix(lineCount).joined(separator: "\n")
+        cachedTail = result
+        cachedTailSignature = signature
+        return result
     }
 
     func entries() -> [LogEntry] {
@@ -710,7 +763,8 @@ final class LogStore {
             return LogEntry(
                 timestamp: parts[0],
                 actor: parts[1],
-                action: parts.dropFirst(2).joined(separator: ": ")
+                action: parts.dropFirst(2).joined(separator: ": "),
+                date: Self.logDateFormatter.date(from: parts[0])
             )
         }
         cachedEntries = parsed
@@ -735,8 +789,37 @@ final class LogStore {
         mailboxStats: MailboxStats,
         requirements: RequirementsSnapshot
     ) -> StatsSnapshot {
-        let entries = self.entries()
+        let digest = self.digest()
+
+        return StatsSnapshot(
+            syncState: syncEnabled ? "On" : "Off",
+            processState: syncStatus,
+            launchAtLoginState: launchAtLogin ? "On" : "Off",
+            newMailWindows: digest.newMailWindows,
+            mailboxStats: mailboxStats,
+            requirements: requirements,
+            lastAccountSync: digest.lastAccountSync,
+            lastAccountSyncDisplay: digest.lastAccountSyncDisplay,
+            lastIndexing: digest.lastIndexing,
+            lastIssue: digest.lastIssue,
+            accountDownloadStats: digest.accountDownloadStats,
+            accountActivity: digest.accountActivity,
+            logPath: logURL.path,
+            accountSyncInProgress: digest.accountSyncInProgress
+        )
+    }
+
+    private func digest() -> LogDigest {
         let now = Date()
+        let key = DigestKey(
+            signature: fileSignature(),
+            minute: Int(now.timeIntervalSince1970 / 60)
+        )
+        if let cachedDigest, cachedDigestKey == key {
+            return cachedDigest
+        }
+
+        let entries = self.entries()
         var totalNewMailStats = RollingDownloadStats()
         var lastIndexing: LogEntry?
         var lastAccountSync: LogEntry?
@@ -763,7 +846,7 @@ final class LogStore {
 
             guard Self.isAccountActor(entry.actor),
                   let count = Self.downloadCount(from: entry.action),
-                  let date = Self.logDate(from: entry.timestamp) else {
+                  let date = entry.date else {
                 continue
             }
 
@@ -803,10 +886,7 @@ final class LogStore {
             .first { Self.isAccountActor($0.actor) }?
             .action == "Sync started"
 
-        return StatsSnapshot(
-            syncState: syncEnabled ? "On" : "Off",
-            processState: syncStatus,
-            launchAtLoginState: launchAtLogin ? "On" : "Off",
+        let digest = LogDigest(
             newMailWindows: AccountDownloadStats(
                 account: "All accounts",
                 lastHour: totalNewMailStats.lastHour,
@@ -814,25 +894,22 @@ final class LogStore {
                 last7Days: totalNewMailStats.last7Days,
                 last30Days: totalNewMailStats.last30Days
             ),
-            mailboxStats: mailboxStats,
-            requirements: requirements,
+            accountDownloadStats: accountDownloadStats,
+            accountActivity: accountActivity,
             lastAccountSync: lastAccountSync.map { "\($0.timestamp): \($0.actor)" } ?? "No completed sync yet",
             lastAccountSyncDisplay: lastAccountSync.map { Self.lastSyncDisplay(for: $0, now: now) } ?? "Last sync: never",
             lastIndexing: lastIndexing.map { Self.entrySummary($0) } ?? "No indexing event yet",
             lastIssue: lastIssue.map { Self.entrySummary($0) } ?? "No recent issues",
-            accountDownloadStats: accountDownloadStats,
-            accountActivity: accountActivity,
-            logPath: logURL.path,
             accountSyncInProgress: accountSyncInProgress
         )
-    }
 
-    private static func logDate(from timestamp: String) -> Date? {
-        logDateFormatter.date(from: timestamp)
+        cachedDigest = digest
+        cachedDigestKey = key
+        return digest
     }
 
     private static func lastSyncDisplay(for entry: LogEntry, now: Date) -> String {
-        guard let date = logDate(from: entry.timestamp) else {
+        guard let date = entry.date else {
             return "Last sync: \(entry.timestamp)"
         }
 
@@ -1431,14 +1508,18 @@ final class SyncController {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    // Symbol effects (pulse while syncing) need an NSImageView; NSStatusBarButton can't host them.
+    private let statusIconView = NSImageView()
     private let statusHeaderView = StatusHeaderView()
     private let menuStatsView = MenuStatsView()
     private var toggleSyncItem: NSMenuItem!
     private var runNowItem: NSMenuItem!
     private var launchAtLoginItem: NSMenuItem!
     private var refreshTimer: Timer?
-    private var shimmerTimer: Timer?
-    private var shimmerStep = 0
+    private var statusIconPulsing = false
+    private var lastIconState: (syncEnabled: Bool, syncInProgress: Bool)?
+    private var lastToolTip: String?
+    private var menuIsOpen = false
     private var logsWindow: TextWindowController?
 
     private lazy var controller = SyncController(repoRoot: Self.resolveRuntimeRoot())
@@ -1467,12 +1548,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.updateMenu()
             }
         }
+        refreshTimer?.tolerance = 1
         updateMenu()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
-        shimmerTimer?.invalidate()
         if controller.isChildSyncRunning {
             controller.stopSync()
         }
@@ -1483,8 +1564,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let button = statusItem.button {
             if let image = NSImage(systemSymbolName: "envelope", accessibilityDescription: "aMail") {
                 image.isTemplate = true
-                button.image = image
+                statusIconView.image = image
             }
+            statusIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+            statusIconView.contentTintColor = .labelColor
+            statusIconView.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(statusIconView)
+            NSLayoutConstraint.activate([
+                statusIconView.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+                statusIconView.centerYAnchor.constraint(equalTo: button.centerYAnchor)
+            ])
             button.title = ""
             button.imagePosition = .imageOnly
             button.toolTip = "aMail"
@@ -1554,16 +1643,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             syncStatus: status,
             syncEnabled: controller.syncEnabled,
             launchAtLogin: controller.launchAtLoginEnabled,
-            mailboxStats: mailboxStatsProvider.snapshot(),
+            // notmuch counts are only ever read from the open menu; spawning them on a timer is waste.
+            mailboxStats: menuIsOpen ? mailboxStatsProvider.snapshot() : .unavailable,
             requirements: requirements
         )
+        let toolTip = "aMail: \(status); \(snapshot.lastAccountSyncDisplay)"
+        if toolTip != lastToolTip {
+            statusItem.button?.toolTip = toolTip
+            lastToolTip = toolTip
+        }
+        updateStatusIcon(syncEnabled: controller.syncEnabled, syncInProgress: isRunning && snapshot.accountSyncInProgress)
+
+        // Everything below is menu chrome: rebuilding it while the menu is closed shows up as pure idle CPU.
+        guard menuIsOpen else { return }
+
         statusHeaderView.update(
             syncState: Self.headerSyncState(syncEnabled: controller.syncEnabled, isRunning: isRunning),
             lastSyncText: snapshot.lastAccountSyncDisplay
         )
         menuStatsView.update(snapshot)
-        statusItem.button?.toolTip = "aMail: \(status); \(snapshot.lastAccountSyncDisplay)"
-        updateStatusIcon(syncEnabled: controller.syncEnabled, syncInProgress: isRunning && snapshot.accountSyncInProgress)
 
         toggleSyncItem.title = controller.syncEnabled ? "Turn Sync Off" : "Turn Sync On"
         toggleSyncItem.state = .off
@@ -1583,45 +1681,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatusIcon(syncEnabled: Bool, syncInProgress: Bool) {
         guard let button = statusItem.button else { return }
 
+        // Re-setting these every tick dirties the status item, and AppKit then re-snapshots the menu bar
+        // through a CoreAnimation commit. That redraw cost more than everything else the app does.
+        guard lastIconState == nil || lastIconState! != (syncEnabled, syncInProgress) else { return }
+        lastIconState = (syncEnabled, syncInProgress)
+
         button.title = ""
         button.imagePosition = .imageOnly
 
         if syncInProgress {
-            startStatusIconShimmer()
-        } else {
-            stopStatusIconShimmer(syncEnabled: syncEnabled)
-        }
-    }
-
-    private func startStatusIconShimmer() {
-        guard shimmerTimer == nil else { return }
-
-        shimmerStep = 0
-        let timer = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.advanceStatusIconShimmer()
+            if !statusIconPulsing {
+                statusIconPulsing = true
+                statusIconView.addSymbolEffect(.pulse, options: .repeating)
             }
+            statusIconView.alphaValue = 1.0
+        } else {
+            if statusIconPulsing {
+                statusIconPulsing = false
+                statusIconView.removeAllSymbolEffects()
+            }
+            statusIconView.alphaValue = syncEnabled ? 1.0 : 0.42
         }
-        shimmerTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func stopStatusIconShimmer(syncEnabled: Bool) {
-        shimmerTimer?.invalidate()
-        shimmerTimer = nil
-        shimmerStep = 0
-        statusItem.button?.alphaValue = syncEnabled ? 1.0 : 0.42
-    }
-
-    private func advanceStatusIconShimmer() {
-        shimmerStep = (shimmerStep + 1) % 24
-        let progress = Double(shimmerStep) / 23.0
-        let wave = (sin(progress * Double.pi * 2.0 - Double.pi / 2.0) + 1.0) / 2.0
-        statusItem.button?.alphaValue = 0.52 + CGFloat(wave) * 0.48
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
         updateMenu()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
     }
 
     @objc private func toggleSync() {
