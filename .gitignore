@@ -14,3 +14,14 @@ dist/
 # Editor swap files
 *.swp
 *.swo
+
+# Web client dependencies, credentials, tokens, and local research
+node_modules/
+.firecrawl/
+webapp/.private/
+webapp/.env*
+!webapp/.env.example
+**/client_secret*.json
+**/*token*.json
+webapp/test-results/
+webapp/playwright-report/
