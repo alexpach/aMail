@@ -1562,7 +1562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            if let image = NSImage(systemSymbolName: "envelope", accessibilityDescription: "aMail") {
+            if let image = NSImage(systemSymbolName: "envelope.open.fill", accessibilityDescription: "aMail") {
                 image.isTemplate = true
                 statusIconView.image = image
             }

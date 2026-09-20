@@ -98,3 +98,7 @@ Message data and labels/profile are cached for five minutes; result lists for 30
 Gmail calls are paced at four starts per second with at most three active requests and a bounded waiting queue. A conservative rolling budget of 4,000 estimated quota units per minute applies per server process. These estimates use Google's May 2026 costs (20 for message/attachment reads, 5 for message lists, 1 for label/profile reads). They are not Google's authoritative account usage and reset when the server restarts. Other clients or server instances have separate local counters. See [Google's quota reference](https://developers.google.com/workspace/gmail/api/reference/quota).
 
 Quota errors (including Gmail 403 rate-limit responses) pause calls for at least 60 seconds and respect longer `Retry-After` values. Transient server failures pause for at least five seconds. The UI displays the delay without requiring a fresh login. After the delay, use Retry or Refresh. Errors are not automatically retried in a loop. Actual 401 errors get one token refresh attempt.
+
+## Icons
+
+The native app icon, menu bar icon, and browser favicon use the macOS SF Symbol `envelope.open.fill`. Run `./tools/make-icons.sh` from the project root on macOS to regenerate the ICNS and PNG assets using `tools/render-symbol.swift`, then rebuild the web client. The earlier SVG artwork is retained as an unused source asset.
