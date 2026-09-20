@@ -230,6 +230,192 @@ struct AccountValidation {
     }
 }
 
+// MARK: - Import of hand-written mbsync config
+
+// One importable account found outside the managed block, plus where its
+// password currently lives in the keychain (parsed from its PassCmd).
+struct MbsyncImportCandidate {
+    var account: MailAccount
+    var oldKeychainService: String?
+    var oldKeychainAccount: String?
+}
+
+enum MbsyncImporter {
+    struct ParseResult {
+        var candidates: [MbsyncImportCandidate] = []
+        // The config text with imported stanzas removed; everything else
+        // (including the managed block) is preserved verbatim.
+        var residual: String = ""
+    }
+
+    private enum Segment {
+        case block([String])    // consecutive non-blank lines, parseable
+        case verbatim([String]) // the managed region, passed through untouched
+    }
+
+    static func parse(_ text: String, archiveBase: String) -> ParseResult {
+        var segments: [Segment] = []
+        var current: [String] = []
+        var managed: [String] = []
+        var inManaged = false
+        for line in text.components(separatedBy: "\n") {
+            if inManaged {
+                managed.append(line)
+                if line.contains(MbsyncConfig.endMarker) {
+                    segments.append(.verbatim(managed))
+                    managed = []
+                    inManaged = false
+                }
+                continue
+            }
+            if line.contains(MbsyncConfig.beginMarker) {
+                if !current.isEmpty { segments.append(.block(current)); current = [] }
+                managed = [line]
+                inManaged = true
+                continue
+            }
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                if !current.isEmpty { segments.append(.block(current)); current = [] }
+            } else {
+                current.append(line)
+            }
+        }
+        if !current.isEmpty { segments.append(.block(current)) }
+        if !managed.isEmpty { segments.append(.verbatim(managed)) }
+
+        // Index stanzas by type + name. Keys are lowercased (mbsync options
+        // are case-insensitive); values keep the rest of the line verbatim.
+        var imapAccounts: [String: (props: [String: String], index: Int)] = [:]
+        var imapStores: [String: (account: String, index: Int)] = [:]
+        var maildirStores: [String: (props: [String: String], index: Int)] = [:]
+        var channels: [String: (props: [String: String], index: Int)] = [:]
+
+        for (index, segment) in segments.enumerated() {
+            guard case .block(let lines) = segment else { continue }
+            var keyword = ""
+            var name = ""
+            var props: [String: String] = [:]
+            for raw in lines {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty || line.hasPrefix("#") { continue }
+                guard let space = line.firstIndex(where: { $0 == " " || $0 == "\t" }) else { continue }
+                let key = String(line[..<space])
+                let value = String(line[line.index(after: space)...]).trimmingCharacters(in: .whitespaces)
+                if keyword.isEmpty {
+                    keyword = key
+                    name = value
+                } else {
+                    props[key.lowercased()] = value
+                }
+            }
+            switch keyword {
+            case "IMAPAccount": imapAccounts[name] = (props, index)
+            case "IMAPStore":
+                if let account = props["account"] { imapStores[name] = (account, index) }
+            case "MaildirStore": maildirStores[name] = (props, index)
+            case "Channel": channels[name] = (props, index)
+            default: break
+            }
+        }
+
+        var candidates: [MbsyncImportCandidate] = []
+        var consumed = Set<Int>()
+
+        for (channelName, channel) in channels.sorted(by: { $0.key < $1.key }) {
+            let far = stripColons(channel.props["far"] ?? "")
+            let near = stripColons(channel.props["near"] ?? "")
+            guard let store = imapStores[far],
+                  let imap = imapAccounts[store.account],
+                  let maildir = maildirStores[near],
+                  let host = imap.props["host"],
+                  let user = imap.props["user"] else { continue }
+
+            var account = MailAccount()
+            account.slug = MbsyncConfig.makeSlug(channelName)
+            account.email = user
+            account.host = host
+            account.port = Int(imap.props["port"] ?? "") ?? 993
+            account.tlsType = imap.props["tlstype"] ?? imap.props["ssltype"] ?? "IMAPS"
+            account.authMechs = imap.props["authmechs"] ?? "LOGIN"
+            account.patterns = channel.props["patterns"] ?? "*"
+            account.maxSize = channel.props["maxsize"] ?? ""
+            account.name = account.slug
+                .split(separator: "-")
+                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                .joined(separator: " ")
+            let hostLower = host.lowercased()
+            account.type = hostLower.contains("gmail") ? .gmail
+                : (hostLower.contains("me.com") || hostLower.contains("icloud") ? .icloud : .imap)
+
+            // Keep the default folder if the path already matches <base>/<slug>.
+            var folder = (maildir.props["path"] ?? "").trimmingCharacters(in: .whitespaces)
+            while folder.hasSuffix("/") { folder.removeLast() }
+            if !folder.isEmpty,
+               MbsyncConfig.expand(folder) == "\(MbsyncConfig.expand(archiveBase))/\(account.slug)" {
+                folder = ""
+            }
+            account.folder = folder
+
+            var candidate = MbsyncImportCandidate(account: account)
+            if let passCmd = imap.props["passcmd"] {
+                let tokens = tokenize(stripQuotes(passCmd))
+                candidate.oldKeychainService = value(after: "-s", in: tokens)
+                candidate.oldKeychainAccount = value(after: "-a", in: tokens)
+            }
+            candidates.append(candidate)
+            consumed.formUnion([channel.index, store.index, imap.index, maildir.index])
+        }
+
+        var parts: [String] = []
+        for (index, segment) in segments.enumerated() {
+            switch segment {
+            case .verbatim(let lines):
+                parts.append(lines.joined(separator: "\n"))
+            case .block(let lines):
+                if !consumed.contains(index) { parts.append(lines.joined(separator: "\n")) }
+            }
+        }
+        return ParseResult(candidates: candidates, residual: parts.joined(separator: "\n\n"))
+    }
+
+    private static func stripColons(_ s: String) -> String {
+        s.trimmingCharacters(in: CharacterSet(charactersIn: ": \t"))
+    }
+
+    private static func stripQuotes(_ s: String) -> String {
+        var out = s
+        if out.hasPrefix("\"") && out.hasSuffix("\"") && out.count >= 2 {
+            out = String(out.dropFirst().dropLast())
+        }
+        return out
+    }
+
+    // Split a shell-ish command on spaces, honoring single and double quotes.
+    static func tokenize(_ s: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var quote: Character?
+        for ch in s {
+            if let q = quote {
+                if ch == q { quote = nil } else { current.append(ch) }
+            } else if ch == "'" || ch == "\"" {
+                quote = ch
+            } else if ch == " " || ch == "\t" {
+                if !current.isEmpty { tokens.append(current); current = "" }
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    private static func value(after flag: String, in tokens: [String]) -> String? {
+        guard let i = tokens.firstIndex(of: flag), i + 1 < tokens.count else { return nil }
+        return tokens[i + 1]
+    }
+}
+
 // MARK: - Keychain (via the `security` CLI)
 
 enum Keychain {
@@ -255,12 +441,16 @@ enum Keychain {
     }
 
     static func readPassword(slug: String, email: String) -> String? {
+        readPassword(service: MbsyncConfig.keychainService(slug: slug), account: email)
+    }
+
+    static func readPassword(service: String, account: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = [
             "find-generic-password",
-            "-s", MbsyncConfig.keychainService(slug: slug),
-            "-a", email,
+            "-s", service,
+            "-a", account,
             "-w"
         ]
         let output = Pipe()
@@ -574,6 +764,59 @@ enum AMailSelfTest {
 
         // Keychain service derivation
         check(MbsyncConfig.keychainService(slug: "work") == "aMail: work", "keychain service name")
+
+        // Importer: hand-written stanzas -> candidate + residual
+        let handWritten = """
+        IMAPAccount legacy-gmail
+        Host imap.gmail.com
+        User me@gmail.com
+        PassCmd "security find-generic-password -a me@gmail.com -s imap.gmail.com -w"
+        TLSType IMAPS
+        AuthMechs LOGIN
+
+        IMAPStore legacy-gmail-remote
+        Account legacy-gmail
+
+        MaildirStore legacy-gmail-local
+        Path ~/MailArchive/legacy-gmail/
+        Inbox ~/MailArchive/legacy-gmail/INBOX
+        SubFolders Verbatim
+
+        Channel legacy-gmail
+        Far :legacy-gmail-remote:
+        Near :legacy-gmail-local:
+        # keep All Mail only
+        #Patterns "INBOX"
+        Patterns "[Gmail]/All Mail"
+        Create Both
+        Expunge None
+        SyncState *
+
+        # unrelated hand config
+        IMAPAccount other
+        Host imap.example.com
+        """
+        let parsed = MbsyncImporter.parse(handWritten, archiveBase: "~/MailArchive")
+        check(parsed.candidates.count == 1, "import finds one account")
+        if let candidate = parsed.candidates.first {
+            check(candidate.account.slug == "legacy-gmail", "import slug")
+            check(candidate.account.email == "me@gmail.com", "import email")
+            check(candidate.account.type == .gmail, "import type from host")
+            check(candidate.account.name == "Legacy Gmail", "import display name")
+            check(candidate.account.patterns == "\"[Gmail]/All Mail\"", "import patterns verbatim")
+            check(candidate.account.folder.isEmpty, "import default folder detected")
+            check(candidate.oldKeychainService == "imap.gmail.com", "import passcmd service")
+            check(candidate.oldKeychainAccount == "me@gmail.com", "import passcmd account")
+        }
+        check(parsed.residual.contains("IMAPAccount other"), "import residual keeps foreign")
+        check(!parsed.residual.contains("Channel legacy-gmail"), "import residual drops channel")
+        check(!parsed.residual.contains("IMAPAccount legacy-gmail"), "import residual drops account")
+
+        // Importer leaves the managed block alone
+        let managedOnly = MbsyncConfig.merge(existing: "", block: MbsyncConfig.managedBlock(accounts: [account], archiveBase: "/tmp/Mail"))
+        let reparsed = MbsyncImporter.parse(managedOnly, archiveBase: "/tmp/Mail")
+        check(reparsed.candidates.isEmpty, "import skips managed block")
+        check(reparsed.residual.contains(MbsyncConfig.beginMarker), "import residual keeps managed block")
 
         print(failed == 0 ? "all passed" : "FAILURES: \(failed)")
         return failed == 0 ? 0 : 1

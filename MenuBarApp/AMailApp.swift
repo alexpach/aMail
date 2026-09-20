@@ -1773,6 +1773,39 @@ struct AMailApp {
         if CommandLine.arguments.contains("--self-test") {
             exit(AMailSelfTest.run())
         }
+        // Print what an mbsyncrc import would do, without changing anything.
+        if CommandLine.arguments.contains("--import-preview") {
+            let repository = AccountRepository()
+            let text = (try? String(contentsOf: repository.mbsyncConfigURL, encoding: .utf8)) ?? ""
+            let parsed = MbsyncImporter.parse(text, archiveBase: repository.load().archiveBase)
+            for candidate in parsed.candidates {
+                let a = candidate.account
+                print("\(a.slug): \(a.email) [\(a.type.rawValue)] host=\(a.host):\(a.port) "
+                    + "patterns=\(a.patterns) folder=\(a.folder.isEmpty ? "<default>" : a.folder) "
+                    + "keychain=\(candidate.oldKeychainService ?? "?")/\(candidate.oldKeychainAccount ?? "?")")
+            }
+            print("--- residual ---")
+            print(parsed.residual)
+            exit(0)
+        }
+        // Headless import — same flow as the Accounts window's Import… button.
+        if CommandLine.arguments.contains("--import") {
+            let code = MainActor.assumeIsolated { () -> Int32 in
+                let store = AccountStore()
+                guard !store.importCandidates().isEmpty else {
+                    print("nothing to import")
+                    return 0
+                }
+                guard let summary = store.importFromMbsyncrc() else {
+                    print("import failed: \(store.lastError ?? "unknown error")")
+                    return 1
+                }
+                for email in summary.imported { print("imported \(email)") }
+                for email in summary.missingPasswords { print("password missing: \(email)") }
+                return 0
+            }
+            exit(code)
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

@@ -67,6 +67,60 @@ final class AccountStore: ObservableObject {
         persist(config.accounts)
     }
 
+    struct ImportSummary {
+        var imported: [String] = []
+        var missingPasswords: [String] = []
+    }
+
+    // Hand-written stanzas in ~/.mbsyncrc that aren't managed yet.
+    func importCandidates() -> [MbsyncImportCandidate] {
+        let text = (try? String(contentsOf: repository.mbsyncConfigURL, encoding: .utf8)) ?? ""
+        return MbsyncImporter.parse(text, archiveBase: config.archiveBase)
+            .candidates
+            .filter { candidate in !config.accounts.contains { $0.slug == candidate.account.slug } }
+    }
+
+    // Import hand-written accounts: copy passwords to aMail keychain entries,
+    // back up the config, strip the old stanzas, and take over via the managed
+    // block. Returns nil if the config rewrite failed (nothing was imported).
+    func importFromMbsyncrc() -> ImportSummary? {
+        let url = repository.mbsyncConfigURL
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let parsed = MbsyncImporter.parse(text, archiveBase: config.archiveBase)
+
+        var summary = ImportSummary()
+        var newAccounts: [MailAccount] = []
+        for candidate in parsed.candidates {
+            let account = candidate.account
+            guard !config.accounts.contains(where: { $0.slug == account.slug }) else { continue }
+            var migrated = false
+            if let service = candidate.oldKeychainService,
+               let keychainAccount = candidate.oldKeychainAccount,
+               let password = Keychain.readPassword(service: service, account: keychainAccount) {
+                migrated = Keychain.setPassword(password, slug: account.slug, email: account.email)
+            }
+            if !migrated { summary.missingPasswords.append(account.email) }
+            summary.imported.append(account.email)
+            newAccounts.append(account)
+        }
+        guard !newAccounts.isEmpty else { return summary }
+
+        do {
+            let backup = url.appendingPathExtension("aMail-backup")
+            try? FileManager.default.removeItem(at: backup)
+            try FileManager.default.copyItem(at: url, to: backup)
+            try parsed.residual.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            lastError = "Import failed: \(error.localizedDescription)"
+            return nil
+        }
+
+        var updated = config.accounts + newAccounts
+        updated.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        persist(updated)
+        return summary
+    }
+
     private func persist(_ accounts: [MailAccount]) {
         config.accounts = accounts
         do {
@@ -161,6 +215,9 @@ struct AccountsView: View {
                 }
                 .disabled(selection == nil)
 
+                Button("Import…") { runImport() }
+                    .help("Import hand-written accounts from ~/.mbsyncrc")
+
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 2) {
@@ -197,6 +254,46 @@ struct AccountsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             store.setArchiveBase(url.path)
         }
+    }
+
+    private func runImport() {
+        let candidates = store.importCandidates()
+        guard !candidates.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "Nothing to import"
+            alert.informativeText = "No hand-written accounts were found outside the aMail-managed block."
+            alert.runModal()
+            return
+        }
+
+        let names = candidates.map { "• \($0.account.email) (\($0.account.slug))" }.joined(separator: "\n")
+        let confirm = NSAlert()
+        confirm.messageText = "Import \(candidates.count) account\(candidates.count == 1 ? "" : "s")?"
+        confirm.informativeText = "\(names)\n\n"
+            + "Passwords are copied to aMail's keychain entries. The hand-written stanzas "
+            + "are replaced by the aMail-managed block; a backup is saved next to the config "
+            + "as .mbsyncrc.aMail-backup."
+        confirm.addButton(withTitle: "Import")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        guard let summary = store.importFromMbsyncrc() else {
+            let failure = NSAlert()
+            failure.messageText = "Import failed"
+            failure.informativeText = store.lastError ?? "The mbsync config could not be rewritten."
+            failure.runModal()
+            return
+        }
+        let done = NSAlert()
+        done.messageText = "Imported \(summary.imported.count) account\(summary.imported.count == 1 ? "" : "s")"
+        if summary.missingPasswords.isEmpty {
+            done.informativeText = "Passwords were migrated to the keychain."
+        } else {
+            done.informativeText = "No password could be migrated for:\n"
+                + summary.missingPasswords.map { "• \($0)" }.joined(separator: "\n")
+                + "\n\nOpen each account and enter its app password."
+        }
+        done.runModal()
     }
 
     private func confirmDelete(_ account: MailAccount) {
